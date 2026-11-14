@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from keras.models import load_model
+from pathlib import Path
 import numpy as np
 import pickle
 import os
@@ -22,10 +23,11 @@ C. Max Sequence Length
 D. Emotion Labels
 """
 #A. Model Path (BiGRU) - can be changed with the MODEL_PATH environment variable
-model_path = os.getenv("MODEL_PATH", "Artifacts/BiGRU_Model.keras")
+BASE_DIR = Path(__file__).resolve().parent
+model_path = BASE_DIR / os.getenv("MODEL_PATH", "Artifacts/BiGRU_Model.keras")
 
 #B. Tokenizer Path - can be changed with the TOKENIZER_PATH environment variable
-tokenizer_path = os.getenv("TOKENIZER_PATH", "Artifacts/tokenizer.pkl")
+tokenizer_path = BASE_DIR / os.getenv("TOKENIZER_PATH", "Artifacts/tokenizer.pkl")
 
 #C. Max Sequence Length (must match the notebook)
 max_sequence_length = 50
@@ -91,7 +93,8 @@ dl_model = {} #{1. BiGRU, 2. Tokenizer}-> True , {} -> False
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print('Loading the model and tokenizer...')
-    dl_model["BiGRU"] = load_model(model_path)                      #BiGRU Model
+    # Serving only needs the weights, not the training optimizer and metrics.
+    dl_model["BiGRU"] = load_model(model_path, compile=False)
     with open(tokenizer_path, 'rb') as file:
         dl_model["Tokenizer"] = pickle.load(file)
     print('Model are loaded successfully...')
@@ -109,7 +112,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-app.mount('/static', StaticFiles(directory="static"), name="static")
+app.mount('/static', StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 
@@ -123,12 +126,15 @@ C. Predict Emotion Endpoint ('/predict')
 #A. Server UI at homepage ('/')
 @app.get('/', include_in_schema=False)
 def server_ui():
-    return FileResponse('static/index.html')
+    return FileResponse(BASE_DIR / 'static/index.html')
 
 #B. Health Check Endpoint ('/health')
 @app.get('/health', response_model=HealthResponse)
 def health_check():
-    return HealthResponse(status="Server is running", model_loaded=bool(dl_model))
+    ready = all(dl_model.get(key) is not None for key in ("BiGRU", "Tokenizer"))
+    if not ready:
+        raise HTTPException(status_code=503, detail="Model is not loaded yet.")
+    return HealthResponse(status="Server is running", model_loaded=True)
 
 #C. Predict Emotion Endpoint ('/predict')
 @app.post('/predict', response_model=PredictionResponse)
@@ -155,6 +161,8 @@ def predict_emotion(text_input: TextInput):
 
     #2.
     tokenized_text = tokenizer_model.texts_to_sequences([cleaned_text])
+    # Validate the same first 50 tokens that will actually reach the model.
+    tokenized_text = [tokenized_text[0][:max_sequence_length]]
 
     #3. index 1 is the <unk> token for words outside the vocabulary
     oov_index = tokenizer_model.word_index.get(tokenizer_model.oov_token)

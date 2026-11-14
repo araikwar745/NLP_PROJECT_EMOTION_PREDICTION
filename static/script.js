@@ -28,6 +28,7 @@
   };
 
   let modelReady = false;
+  let analysisPending = false;
 
   /* ---------------------------------------------------------------
      Health check — poll until the model is loaded
@@ -74,7 +75,7 @@
 
   function syncButtonState() {
     const hasText = el.textInput.value.trim().length > 0;
-    el.analyzeBtn.disabled = !hasText || !modelReady;
+    el.analyzeBtn.disabled = !hasText || !modelReady || analysisPending;
   }
 
   el.analyzeBtn.addEventListener("click", runAnalysis);
@@ -84,7 +85,7 @@
   --------------------------------------------------------------- */
   async function runAnalysis() {
     const text = el.textInput.value.trim();
-    if (!text || !modelReady) return;
+    if (!text || !modelReady || analysisPending) return;
 
     hideError();
     enterThinking();
@@ -117,6 +118,8 @@
   }
 
   function enterThinking() {
+    analysisPending = true;
+    el.resultSection.hidden = true;
     el.analyzeBtn.classList.add("loading");
     el.analyzeBtn.querySelector(".btn-label").textContent = "Reading…";
     el.analyzeBtn.disabled = true;
@@ -126,6 +129,7 @@
   }
 
   function exitThinking(success) {
+    analysisPending = false;
     el.analyzeBtn.classList.remove("loading");
     el.analyzeBtn.querySelector(".btn-label").textContent = "Read the mood";
     syncButtonState();

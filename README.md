@@ -48,13 +48,18 @@ NLP_PROJECT_EMOTION_PREDICTION/
 ├── main.py                    # FastAPI backend
 ├── report.md                  # project report
 ├── requirements.txt
+├── requirements-test.txt      # API regression test dependencies
+├── render.yaml                # optional Render Blueprint
+├── tests/                     # checks using the real saved model
+├── .github/workflows/         # Linux checks before and after merging
 ├── .python-version            # Python version used by Render
 └── runtime.txt
 ```
 
 ## Run Locally
 
-**Prerequisites:** Python 3.12 and pip. (TensorFlow has no build for Python 3.14 yet.)
+**Prerequisites:** Python 3.12 and pip (Python 3.11 is also supported).
+The pinned dependencies require Python 3.11 or 3.12.
 
 1.  Clone the repository:
 
@@ -97,6 +102,69 @@ NLP_PROJECT_EMOTION_PREDICTION/
 
 Ensure the trained model and tokenizer files are present in the
 `Artifacts/` directory before starting the server.
+
+## Deploying an update to the existing Render app
+
+Merge the PR into `main`. If the existing Render service is connected to this
+repository's `main` branch with auto-deploy enabled, Render builds and deploys
+the merged code automatically. The trained model and tokenizer are committed
+in `Artifacts/`: no notebook run, manual upload, or new service is needed.
+
+The existing Python service can keep these standard commands:
+
+```bash
+# Build
+pip install -r requirements.txt
+# Start (one worker avoids loading multiple model copies)
+uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+```
+
+`.python-version` selects Python 3.12. A dashboard `PYTHON_VERSION` override
+using **3.11.x or 3.12.x can stay as it is**. Only an incompatible override
+(for example 3.13 or 3.14 with these pinned packages) needs to be removed or
+changed to `3.12.12`. Render environment variables take precedence over the file.
+
+If the app does not update after merging, the service owner should check that
+the linked branch is `main`, auto-deploy is enabled, and the build succeeded.
+GitHub Actions runs on pushes to `main` as well as PRs, so Render's
+"After CI Checks Pass" mode also has checks to wait for.
+
+`render.yaml` contains the Python version, build/start commands, auto-deploy,
+and `/health` check for services managed through a Render Blueprint. **Adding
+this file does not change an existing dashboard-created service's settings.**
+There is no need to create another service to deploy this PR.
+
+After deployment, `/health` should return `model_loaded: true`, "I love you so
+much" should return **love**, and punctuation-only input should show an error
+without the previous prediction remaining visible.
+
+See Render's [auto-deploy documentation](https://render.com/docs/deploys),
+[Python version precedence](https://render.com/docs/python-version), and
+[Blueprint setup](https://render.com/docs/infrastructure-as-code).
+
+## Automated app checks
+
+```bash
+python -m pip install -r requirements-test.txt
+python -m unittest discover -s tests -v
+```
+
+These checks load the committed model and tokenizer, test the API and static
+assets from outside the repository directory, verify known prediction
+regressions and probability output, and exercise invalid input and readiness
+failures. GitHub Actions runs them on Linux with Python 3.11 and 3.12. No
+Render credentials or retraining are needed.
+
+The Python 3.12 job also opens the actual page in Chromium and checks visible
+probability bars, errors clearing previous results, overlapping submissions,
+and the mobile layout. To run the browser checks locally with the app running
+on port 8765:
+
+```bash
+python -m pip install -r requirements-browser.txt
+python -m playwright install chromium
+python tests/check_browser.py http://127.0.0.1:8765
+```
 
 ## API Endpoints
 

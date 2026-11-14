@@ -1,0 +1,15 @@
+# Existing dashboard-created services keep their settings until linked to a Blueprint.
+# A normal merge needs no Blueprint setup when the existing service watches main.
+services:
+  - type: web
+    name: nlp-project-emotion-prediction
+    runtime: python
+    plan: free
+    branch: main
+    autoDeployTrigger: commit
+    buildCommand: python -m pip install -r requirements.txt
+    startCommand: python -m uvicorn main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.12"

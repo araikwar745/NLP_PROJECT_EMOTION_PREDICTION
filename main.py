@@ -1,15 +1,14 @@
 
 from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.preprocessing.text import Tokenizer
 from fastapi.staticfiles import StaticFiles
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from keras.models import load_model
 import numpy as np
 import pickle
+import os
 import re
 
 
@@ -21,35 +20,24 @@ A. Model Path (BiGRU)
 B. Tokenizer Path
 C. Max Sequence Length
 D. Emotion Labels
-E. Emotion emojis
 """
-#A. Model Path (BiGRU)
-model_path = "Artifacts/BiGRU_Model.keras"
+#A. Model Path (BiGRU) - can be changed with the MODEL_PATH environment variable
+model_path = os.getenv("MODEL_PATH", "Artifacts/BiGRU_Model.keras")
 
-#B. Tokenizer Path
-tokenizer_path = "Artifacts/tokenizer.pkl"
+#B. Tokenizer Path - can be changed with the TOKENIZER_PATH environment variable
+tokenizer_path = os.getenv("TOKENIZER_PATH", "Artifacts/tokenizer.pkl")
 
-#C. Max Sequence Length
+#C. Max Sequence Length (must match the notebook)
 max_sequence_length = 50
 
-#D. Emotion Labels
+#D. Emotion Labels (same order as the dair-ai/emotion dataset)
 emotion_labels = ["sadness", "joy", "love", "anger", "fear", "surprise"]
-
-#E. Emotion emojis
-EMOTION_EMOJIS = {
-    "sadness": "😢",
-    "joy": "😄",
-    "love": "❤️",
-    "anger": "😠",
-    "fear": "😨",
-    "surprise": "😲",
-}
 
 
 
 """
 2. Preprocess the upcoming text
-Cleans raw text so it matches the format used while training.
+Cleans raw text so it matches the format used while training (the notebook uses the same function).
 A. Convert the text to lowercase. -done
 B. Remove apostrophes (e.g can't -> cant). -done
 C. Remove Special Characters and Punctuation. -done
@@ -84,9 +72,13 @@ class PredictionResponse(BaseModel):
     text: str
     predicted_emotion: str
     confidence : float
+    all_probabilities: dict[str, float]
+    # old misspelled name, kept so existing clients do not break
     all_probabilites: dict[str, float]
 
 class HealthResponse(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())  # allows the field name "model_loaded" without a warning
+
     status: str
     model_loaded: bool
 
@@ -102,27 +94,19 @@ async def lifespan(app: FastAPI):
     dl_model["BiGRU"] = load_model(model_path)                      #BiGRU Model
     with open(tokenizer_path, 'rb') as file:
         dl_model["Tokenizer"] = pickle.load(file)
-    print('Model are loaded successfully...')   
+    print('Model are loaded successfully...')
 
     yield #Pause, model is laoded and server is running and at this point model wait karega for request
 
     dl_model.clear() #Ek baar server band ho gaya uske baad model ko memory se hata do.
-               
+
 
 """
 5. Mount the static files to the FastAPI app
-A. Enable CORS (Cross-Origin Resource Sharing) to allow requests from different origins.
+The web page is served by this same app, so no CORS middleware is needed.
 """
 app = FastAPI(
     lifespan=lifespan
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
 )
 
 app.mount('/static', StaticFiles(directory="static"), name="static")
@@ -152,9 +136,10 @@ def predict_emotion(text_input: TextInput):
     """
     1. Cleans the input sentences.
     2. Convert the words into numeric using tokenizer.
-    3. Pad the sequences to ensure uniform length.
-    4. Run prediction using the BiGRU model.
-    5. Return the top emotion and full probability breakdown.
+    3. Reject input with no English word the model knows (it would only get a meaningless guess).
+    4. Pad the sequences to ensure uniform length.
+    5. Run prediction using the BiGRU model.
+    6. Return the top emotion and full probability breakdown.
     """
 
     BiGRU_model     = dl_model.get("BiGRU")
@@ -163,11 +148,20 @@ def predict_emotion(text_input: TextInput):
     if BiGRU_model is None or tokenizer_model is None:
         raise HTTPException(status_code=503, detail="Model is not loaded yet. Please try again later.")
 
-    #1. 
+    #1.
     cleaned_text = preprocess_text(text_input.text)
+    if not cleaned_text:
+        raise HTTPException(status_code=422, detail="Please type a sentence in English. No English letters or numbers were found in the text.")
 
-    #2. and 3. 
+    #2.
     tokenized_text = tokenizer_model.texts_to_sequences([cleaned_text])
+
+    #3. index 1 is the <unk> token for words outside the vocabulary
+    oov_index = tokenizer_model.word_index.get(tokenizer_model.oov_token)
+    if not any(token != oov_index for token in tokenized_text[0]):
+        raise HTTPException(status_code=422, detail="None of these words are in the model's English vocabulary. Please try a normal English sentence.")
+
+    #4.
     padded_sequence = pad_sequences(
         tokenized_text,
         maxlen=max_sequence_length,
@@ -175,17 +169,18 @@ def predict_emotion(text_input: TextInput):
         truncating="post"
     )
 
-    probabilites     = BiGRU_model.predict(padded_sequence)[0]
+    #5. a direct call is faster than model.predict() for a single sentence
+    probabilities = np.asarray(BiGRU_model(padded_sequence, training=False))[0]
 
-    top_emotion_index = int(np.argmax(probabilites)) # 4
-    all_probabilites =  {
-        label: float(prob) for prob, label in zip(probabilites, emotion_labels)
-          
+    top_emotion_index = int(np.argmax(probabilities))
+    all_probabilities = {
+        label: float(prob) for prob, label in zip(probabilities, emotion_labels)
     }
 
     return PredictionResponse(
         text = text_input.text,
         predicted_emotion = emotion_labels[top_emotion_index],
-        confidence = float(probabilites[top_emotion_index]), 
-        all_probabilites = all_probabilites
+        confidence = float(probabilities[top_emotion_index]),
+        all_probabilities = all_probabilities,
+        all_probabilites = all_probabilities,
     )

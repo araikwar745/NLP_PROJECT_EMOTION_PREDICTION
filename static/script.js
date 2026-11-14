@@ -111,6 +111,7 @@
       renderResult(data, text);
     } catch (err) {
       exitThinking(false);
+      el.resultSection.hidden = true; // do not leave the previous sentence's result next to the error
       showError(err.message || "Something went wrong. Try again.");
     }
   }
@@ -151,7 +152,7 @@
     el.confidenceText.textContent = `${(data.confidence * 100).toFixed(1)}% confidence`;
     el.echoedText.textContent = `“${originalText}”`;
 
-    renderBars(data.all_probabilites);
+    renderBars(data.all_probabilities || data.all_probabilites);
 
     el.resultSection.hidden = false;
     el.resultSection.classList.remove("entering");
